@@ -25,8 +25,13 @@ use Pod::Usage;
 use lib 'lib/';
 use Hyphen;
 
+use experimental 'switch';
+use Gtk2::Gdk::Keysyms;
+
 # defines
-my $font = "courier new 24";
+my $browser = "firefox";
+
+my $font = "Helvetica 24";
 my $span_black_open = "<span background='white' foreground='black' font_desc='".$font."'><big>";
 my $span_blue_open = "<span background='white' foreground='blue' font_desc='".$font."'><big>";
 my $span_close = "</big></span>";
@@ -40,7 +45,7 @@ my $gtk_sentence_text;
 my $gtk_timer;
 
 # global variables
-my $wpm = 200;
+my $wpm = 320;
 my $pause_button;
 my $pause = 1;
 my $back_ptr = -1;
@@ -49,6 +54,8 @@ my $fast_forward = 0;
 my $hyphen = Text::Hyphen->new('min_word' => 15,
 	'min_prefix' => 7, 'min_suffix' => 7, 'min_part' => 6);
 
+
+my $current_word="";
 
 ####################
 # Helper functions #
@@ -147,6 +154,16 @@ sub get_next_word
 	return shift(@words_buffer);
 }
 
+sub lookup_word {
+ system("$browser 'define: $current_word'"); 
+}
+
+sub open_at {
+ button_pause();
+ 1;
+}
+
+
 #################
 # GTK callbacks #
 #################
@@ -204,6 +221,7 @@ sub button_faster
 sub set_text
 {
 	my $word = get_next_word();
+   $current_word = $word;
 	my $timeout = 60000 / $wpm;
 	my $next_shot = $timeout;
 	my $word_length = length($word);
@@ -260,6 +278,34 @@ sub set_text
 	return TRUE;
 }
 
+
+sub keyin {
+  my $key=shift;
+  my $in=grep($key==$_,@Gtk2::Gdk::Keysyms{@_});
+  return $in>0 
+}
+sub keyevent {
+ my ($widget,$event,$param) = @_;
+ my $key = $event->keyval();
+
+ given($key) {
+   when($Gtk2::Gdk::Keysyms{space} ) { button_pause;}
+
+   when(keyin($key,qw/Escape q/)) { button_quit ;}
+   when(keyin($key,qw/< b    h leftarrow/))  { button_back; set_text;}
+   when(keyin($key,qw/>      l rightarrow/)) { button_forward; set_text;}
+   when(keyin($key,qw/plus   k uparrow/))    { button_faster;}
+   when(keyin($key,qw/minus  j downarrow/))  { button_slower;}
+
+
+   when($Gtk2::Gdk::Keysyms{o} ) { open_at;}
+   when($Gtk2::Gdk::Keysyms{d} ) { lookup_word;}
+	
+
+   default {}
+ }
+}
+
 ########
 # main #
 ########
@@ -278,6 +324,7 @@ sub main
 	my $file = "infile.txt";
 	my $length = 24;
 	my $version = 0;
+   my $full_ui = 0;
 	my $help = 0;
 	my $man = 0;
 	my $word = "";
@@ -288,6 +335,7 @@ sub main
 			"fastforward|f=i" => \$fast_forward,
 			"version|v" => \$version,
 			"help|h" => \$help,
+			"ui|u" => \$full_ui,
 			"man|m" => \$man)
 		or die("Error in command line arguments\n");
 
@@ -333,7 +381,7 @@ sub main
 	$quit_button = Gtk2::Button->new("Quit");
 	$quit_button->signal_connect(clicked => \&button_quit, $window);
 
-	# backward button
+	# # backward button
 	$back_button = Gtk2::Button->new(" << ");
 	$back_button->signal_connect(clicked => \&button_back, $window);
 
@@ -358,10 +406,8 @@ sub main
 	$gtk_speed_label->set_markup("WPM: $wpm");
 
 	# text label, showing the actual word
-	$gtk_text = Gtk2::Label->new();
-	for ($i = 0 ; $i < $word_width; ++$i) {
-		$word .= " ";
-	}
+   $word=" "x$word_width;
+	$gtk_text = Gtk2::Label->new($word);
 	$gtk_text->set_markup($span_black_open.$word.$span_close);
 	
 
@@ -370,25 +416,40 @@ sub main
 	$gtk_sentence_text->set_markup("sentence nr: ");
 
 	# horizontal box for the control buttons
-	$hbox = Gtk2::HBox->new(FALSE, 10);
-	$hbox->pack_start($pause_button, FALSE, FALSE, 0);
-	$hbox->pack_start($back_button, FALSE, FALSE, 0);
-	$hbox->pack_start($forward_button, FALSE, FALSE, 0);
-	$hbox->pack_start(Gtk2::VSeparator->new(), FALSE, FALSE, 4);
-	$hbox->pack_start($slower_button, FALSE, FALSE, 0);
-	$hbox->pack_start($faster_button, FALSE, FALSE, 0);
-	$hbox->pack_start($gtk_speed_label, FALSE, FALSE, 0);
-	$hbox->pack_start(Gtk2::VSeparator->new(), FALSE, FALSE, 4);
-	$hbox->pack_start($gtk_sentence_text, FALSE, FALSE, 0);
+   if($full_ui){
+	  $hbox = Gtk2::HBox->new(FALSE, 10);
+	  $hbox->pack_start($pause_button, FALSE, FALSE, 0);
+	  $hbox->pack_start($back_button, FALSE, FALSE, 0);
+	  $hbox->pack_start($forward_button, FALSE, FALSE, 0);
+	  $hbox->pack_start(Gtk2::VSeparator->new(), FALSE, FALSE, 4);
+	  $hbox->pack_start($slower_button, FALSE, FALSE, 0);
+	  $hbox->pack_start($faster_button, FALSE, FALSE, 0);
+	  $hbox->pack_start($gtk_speed_label, FALSE, FALSE, 0);
+	  $hbox->pack_start(Gtk2::VSeparator->new(), FALSE, FALSE, 4);
+	  $hbox->pack_start($gtk_sentence_text, FALSE, FALSE, 0);
 
-	# vertical box for the rest
-	$vbox = Gtk2::VBox->new(FALSE, 10);
-	$vbox->pack_start($hbox,FALSE,FALSE,4);
-	$vbox->pack_start(Gtk2::HSeparator->new(),FALSE,FALSE,4);
-	$vbox->pack_start($gtk_text, TRUE, TRUE, 5);
-	$vbox->pack_start(Gtk2::HSeparator->new(),FALSE,FALSE,4);
-	$vbox->pack_start($quit_button, FALSE, FALSE, 0);
+	  # vertical box for the rest
+	  $vbox = Gtk2::VBox->new(FALSE, 10);
+
+	  $vbox->pack_start($hbox,FALSE,FALSE,4);
+	  $vbox->pack_start(Gtk2::HSeparator->new(),FALSE,FALSE,4);
+
+	  $vbox->pack_start($gtk_text, TRUE, TRUE, 5);
+	  $vbox->pack_start(Gtk2::HSeparator->new(),FALSE,FALSE,4);
+	  $vbox->pack_start($quit_button, FALSE, FALSE, 0);
+   } else {
+     my $color = Gtk2::Gdk::Color->parse('white');
+     $window->modify_bg('normal', $color);
+
+	  $vbox = Gtk2::VBox->new(FALSE, 10);
+	  $vbox->pack_start($gtk_text, TRUE, TRUE, 5);
+   } 
+
+
 	$window->add($vbox);
+
+   # bind keyboard events
+   $window->signal_connect('key-press-event' => \&keyevent);
 
 	# show window and start gtk main
 	$window->show_all;
@@ -418,6 +479,7 @@ spread0r [options] file
 	-h, --help			print brief help message
 	-v, --version			print version and quit
 	-m, --man			print the full documentation
+	-u, --ui			full ui
 	-w <num>, --wpm <num>		reading speed in words per minute
 	-f <num>, --fastforward <num>	seek to <num>. sentence
 
@@ -438,6 +500,9 @@ Print version and exits.
 
 print the full documentation
 
+=item B<-u, --ui>
+open with menu and buttons
+
 =item B<-w, --wpm>
 
 Set the reading speed to the given amount of words per minute.
@@ -454,5 +519,40 @@ Skip all sentences until it reaches given sentence
 B<spread0r> will read the given utf8 encoded input file and present
 it to you word by word, so you can read the text without manually
 refocusing.  This can double your reading speed!
+
+=head2 Keys
+
+=over 8
+
+=item B<Escape, q>
+
+ quit
+
+=item B<h, E<lt>, b, leftarrow>
+
+ move back
+
+=item B<l, E<gt>, rightarrow>
+
+ move foward
+
+=item B<-, j, downarrow>
+
+ slower
+
+=item B<+, k, uparrow>
+
+ faster
+
+=item B<d>
+
+ launch browser to define current word
+
+=item B<o>
+
+ TODO: open in text editor at position
+
+=back
+
 
 =cut
