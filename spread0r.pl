@@ -26,14 +26,19 @@ use lib 'lib/';
 use Hyphen;
 
 use experimental 'switch';
+#use feature qw(switch);
 use Gtk2::Gdk::Keysyms;
 
 # defines
+my $minimal_ui = 1;
 my $browser = "firefox";
 
+my $VERBOSE=1;
+
 my $font = "Helvetica 24";
-my $span_black_open = "<span background='white' foreground='black' font_desc='".$font."'><big>";
-my $span_blue_open = "<span background='white' foreground='blue' font_desc='".$font."'><big>";
+my $bg_color = "white";
+my $span_black_open = "<span background='$bg_color' foreground='black' font_desc='".$font."'><big>";
+my $span_blue_open  = "<span background='$bg_color' foreground='blue'  font_desc='".$font."'><big>";
 my $span_close = "</big></span>";
 my $word_width = 28;
 my $spread0r_version = "1.0";
@@ -45,7 +50,7 @@ my $gtk_sentence_text;
 my $gtk_timer;
 
 # global variables
-my $wpm = 320;
+my $wpm = 340;
 my $pause_button;
 my $pause = 1;
 my $back_ptr = -1;
@@ -56,10 +61,12 @@ my $hyphen = Text::Hyphen->new('min_word' => 15,
 
 
 my $current_word="";
+my %current_position = (line=>0,word=>0,column=>0);
 
 ####################
 # Helper functions #
 ####################
+
 
 sub get_line
 {
@@ -72,6 +79,8 @@ sub get_line
 		exit(-1);
 	}
 	$line =~ s/[\n\r]/ /g;
+
+   $current_position{line}++;
 
 	return $line;
 }
@@ -151,6 +160,7 @@ sub get_next_word
 		$back_ptr-- if ($#words_buffer <= 0);
 	}
 
+   settitle();
 	return shift(@words_buffer);
 }
 
@@ -167,6 +177,13 @@ sub open_at {
 #################
 # GTK callbacks #
 #################
+
+# set gtk window title to include sentence count and wpm
+my $window;
+sub settitle() {
+   $window->set_title("spread0r.pl: $sentence_cnt @ $wpm ");
+}
+
 sub button_quit
 {
 	Gtk2->main_quit;
@@ -176,6 +193,8 @@ sub button_quit
 
 sub button_back
 {
+
+   print "#going back\n" if $VERBOSE;
 	$back_ptr++ if ($back_ptr < 10);
 	return TRUE;
 }
@@ -183,6 +202,7 @@ sub button_back
 sub button_forward
 {
 	$back_ptr-- if ($back_ptr > -2);
+   print "#going foward\n" if $VERBOSE;
 	return TRUE;
 }
 
@@ -203,6 +223,8 @@ sub button_pause
 sub button_slower
 {
 	$wpm -= 10 if ($wpm > 40);
+   print "#slower: $wpm\n" if $VERBOSE;
+   settitle();
 	$gtk_speed_label->set_markup("WPM: $wpm");
 	return TRUE;
 }
@@ -210,9 +232,21 @@ sub button_slower
 sub button_faster
 {
 	$wpm += 10 if($wpm < 1000);
+   print "#faster: $wpm\n" if $VERBOSE;
+   settitle();
 	$gtk_speed_label->set_markup("WPM: $wpm");
 	return TRUE;
 }
+
+sub lookup_word {
+ system("$browser 'define: $current_word'"); 
+}
+
+sub open_at {
+ button_pause();
+ 1;
+}
+
 
 ######################
 # GTK timer callback #
@@ -292,10 +326,10 @@ sub keyevent {
    when($Gtk2::Gdk::Keysyms{space} ) { button_pause;}
 
    when(keyin($key,qw/Escape q/)) { button_quit ;}
-   when(keyin($key,qw/< b    h leftarrow/))  { button_back; set_text;}
-   when(keyin($key,qw/>      l rightarrow/)) { button_forward; set_text;}
-   when(keyin($key,qw/plus   k uparrow/))    { button_faster;}
-   when(keyin($key,qw/minus  j downarrow/))  { button_slower;}
+   when(keyin($key,qw/< b   h leftarrow/)) { button_back; set_text;}
+   when(keyin($key,qw/>     l rightarrow/)) { button_forward; set_text;}
+   when(keyin($key,qw/plus  k downarrow/)) { button_slower;}
+   when(keyin($key,qw/minus j uparrow/)) { button_faster;}
 
 
    when($Gtk2::Gdk::Keysyms{o} ) { open_at;}
@@ -312,7 +346,6 @@ sub keyevent {
 
 sub main
 {
-	my $window;
 	my $quit_button;
 	my $back_button;
 	my $forward_button;
@@ -373,6 +406,8 @@ sub main
 	
 	# set up window and quit callbacks
 	$window = Gtk2::Window->new;
+   $window->modify_bg('normal',Gtk2::Gdk::Color->parse($bg_color));
+   settitle();
 	$window->signal_connect(delete_event => \&button_quit);
 	$window->signal_connect(destroy =>  \&button_quit);
 	$window->set_border_width(10);
