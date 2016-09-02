@@ -406,7 +406,8 @@ sub main
 	$gtk_speed_label->set_markup("WPM: $wpm");
 
 	# text label, showing the actual word
-   $word=" "x$word_width;
+   #$word=" "x$word_width;
+   $word="      Space to start     ";
 	$gtk_text = Gtk2::Label->new($word);
 	$gtk_text->set_markup($span_black_open.$word.$span_close);
 	
