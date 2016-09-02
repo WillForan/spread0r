@@ -164,14 +164,6 @@ sub get_next_word
 	return shift(@words_buffer);
 }
 
-sub lookup_word {
- system("$browser 'define: $current_word'"); 
-}
-
-sub open_at {
- button_pause();
- 1;
-}
 
 
 #################
