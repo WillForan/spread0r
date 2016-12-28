@@ -31,14 +31,13 @@ use experimental qw(switch signatures);
 #use feature qw(switch);
 use Gtk2::Gdk::Keysyms;
 
+use Data::Dumper;
 # defines
 
 my $VERBOSE=1;
 
 
 # SETTINGS
-our $wpm = 340;
-my $word_width = 28;
 my $font = "Helvetica 24";
 my $bg_color = "black";
 my $fg_color = "grey";
@@ -52,10 +51,16 @@ my $spread0r_version = "2.0";
 
 # globaly used gtk stuff
 
+our $word_width = 28;
+our $wpm = 340;
+our $pause = 1;
+our $allwordidx=0;
+
 our $gtk_text;
 our $window;
 our $gtk_timer;
-our $pause = 0;
+our @allwords=();
+our $cnt = {byte=>0, line=>0, word=>0,bytes_total=>0};
 
 
 
@@ -78,24 +83,24 @@ sub escape {
 }
 
 # use lib 'lib/';
-# use Hyphen;
-# my $hyphen = Text::Hyphen->new('min_word' => 15,
-# 	'min_prefix' => 7, 'min_suffix' => 7, 'min_part' => 6);
-# my @words_buffer;
-# sub limit_word_length
-# {
-# 	my $i = 0;
-# 	for ($i = 0; $i <= $#words_buffer; ++$i) {
-# 		my @tmp_buffer = ();
-# 		@tmp_buffer = $hyphen->hyphenate($words_buffer[$i]);
-# 		# if hyphenate happened, replace original word by hyphen array
-# 		if ($#tmp_buffer > 0) {
-# 			$tmp_buffer[$_] .= "-" foreach (0 .. $#tmp_buffer - 1);
-# 			splice(@words_buffer, $i, 1, @tmp_buffer);
-# 		}
-# 	}
-# }
-# 
+ use Text::Hyphen;
+my $hyphen = Text::Hyphen->new('min_word' => 15,
+	'min_prefix' => 7, 'min_suffix' => 7, 'min_part' => 6);
+my @words_buffer;
+sub limit_word_length
+{
+	my $i = 0;
+	for ($i = 0; $i <= $#words_buffer; ++$i) {
+		my @tmp_buffer = ();
+		@tmp_buffer = $hyphen->hyphenate($words_buffer[$i]);
+		# if hyphenate happened, replace original word by hyphen array
+		if ($#tmp_buffer > 0) {
+			$tmp_buffer[$_] .= "-" foreach (0 .. $#tmp_buffer - 1);
+			splice(@words_buffer, $i, 1, @tmp_buffer);
+		}
+	}
+}
+
 
 #################
 # GTK callbacks #
@@ -144,20 +149,17 @@ sub calc_timeout($word,$wpm) {
 	my $word_length = length($word);
    
 	# calculate timeout for next run
+   # long words get a little more time to read
 	$next_shot += ($timeout / 5 ) * ($word_length - 6) if ($word_length > 6);
+   # hang on commas
 	$next_shot += $timeout / 2 if ($word =~ /.*,$/);
+   # not as long on punctuation and quotes
 	$next_shot += $timeout * 1.5 if ($word =~ /.*[\.!\?;]«?$/);
+   # and some time if it's a name (or start of a sentence) 
+	$next_shot += $timeout/5 if ($word =~ /[A-Z]/);
+   # funny chars
+	$next_shot += $timeout/2 if ($word =~ /\W/);
    return($next_shot);
-}
-
-sub set_timer($wait,$func) {
-   our $pause;
-   our $gtk_timer;
-	Glib::Source->remove($gtk_timer);
-	if (!$pause) {
-		$gtk_timer = Glib::Timeout->add($wait,$func);
-	}
-   return TRUE;
 }
 
 # return an xml encoded, vowel centered and colored, word
@@ -195,12 +197,10 @@ sub pretty_vowel_join(@parts){
    @parts = map {escape($_)} @parts;
    
 
-   # TODO: rename black and blue to bg fg
-   # nest xml instead of open close
 	my $word = join("",
-            $span_bg_open, $parts[0], $span_close,
-            $span_fg_open,  $parts[1], $span_close,
-            $span_bg_open, $parts[2], $span_close);
+            $span_bg_open, $parts[0], 
+            $span_fg_open, $parts[1], $span_close,
+                           $parts[2], $span_close);
 
    return($word);
 }
@@ -223,92 +223,188 @@ sub center_word($word,$word_width) {
 
 }
 
-sub show_words($buf){
-  my $word = $buf->[$#$buf];
-  my $markup =  pretty_vowel_join(vowel_centered_word_split($word,$word_width));
-  $gtk_text->set_markup($markup);
-}
-
 sub cnt_title($cnt) {
   my $title="$cnt->{byte} / $cnt->{bytes_total} ($cnt->{line})";
   settitle($title);
 }
 
-sub gtk_show($word,$buf,$cnt) {
- our $wpm;
- my $waittime=calc_timeout($word,$wpm);
- say "showing $word with $waittime" if $VERBOSE;
- set_timer($waittime, sub { show_words($buf); cnt_title($cnt) });
-}
 sub stall(){
  while($pause){
 
  }
 }
 
+# use in map to duplicate word byte,line,count for diffrent secions of a hypen
+sub hyphendup($ws) {
+  #say Dumper($ws);
+  my @hyphens= $hyphen->hyphenate($ws->{word});
+  
+  #this didn't work
+  #@hyphens=map {$a{word}=$_;return {%a} } @hyphens;
+  my @hyphenall=();
+  for my $hw (@hyphens) {
+    my %a=%$ws;
+    $a{fullword}=$a{word} if( $a{word} ne $hw ); 
+    $a{word}=$hw;
+    push @hyphenall, {%a};
+  }
+  
+  # add hyphen to end of each but the last segment
+  $hyphenall[$_]->{word} .= '-' for (0..$#hyphenall-1);
+
+  return @hyphenall;
+}
+
 # get the next word into buffer
 # set count metrics
 # return the word
-sub next_words($FH,$buf,$cnt) {
+sub get_words($FH,$cnt) {
  # make the record separator a space. 
  # we'll need to capture other \s;
  local $/=' ';
  my $record = <$FH>;
+ my @outputds = ();
 
  # where are we in the file
  # is not accurate to the word.
  # same count for both words in word1\nword2 
- $cnt{byte} = tell($FH); 
+ $cnt->{byte} = tell($FH); 
  
  # skip if nothing but weird white characters
  if( $record =~ m/^\s+$/){
-   return next_word($FH,$buf,$cnt);
+   return get_words($FH,$cnt);
  }
 
- # most of the time, should be 1 element array
- my @words=split(/\s+/,$record); 
- for my $word (@words){
-   $cnt{word}++;
-   word_into_buf($word,$buf);
-   gtk_show($word,$buf,$cnt);
-   stall();
- }
- 
+
  # line count will likely be off for the word before the \n
  # b/c we are reading in like word1\nword2
- $cnt{line}++ if $record =~ m/\n/;
+ my @isnewline=(); my $i=0;
+ my $newlinestart = ($record =~ /^\s*\n/)?1:0;
+ $isnewline[$i++] = ($& =~ /(\n+)/)?length($1):0 while($record=~m/\s+/g);
+ 
+ # most of the time, should be 1 element array
+ my @words=split(/\s+/,$record); 
+ #say "words @words: $#words; @isnewline";
 
+ for (my $i=0; $i<$#words+1; $i++){
+   my $word=$words[$i];
+   next if $word =~ m/^$/; # started with a no-space whitespace
+   #say "$i/$#words: $word '$isnewline[$i]'";
+   # update line if newline is first word
+   $cnt->{line}+=$isnewline[$i] if $newlinestart ;
+   $cnt->{word}++;
+   # TODO: update byte count for $i>0
+   push @outputds, {word=>$word, line=>$cnt->{line}+1, byte=>$cnt->{byte} };
+   # update line if newline after word
+   $cnt->{line}+=$isnewline[$i] if !$newlinestart ;
+ }
+
+ # break up hyphens
+ return map {hyphendup($_)} @outputds;
+ 
+}
+
+sub show_next_word() {
+ our $allwordidx;
+ $allwordidx++;
+ show_word();
+}
+
+# get this word and increment
+sub show_word() {
+ our $allwordidx;
+ our $word_width;
+ our @allwords;
+ our $gtk_text;
+ our $pause;
+
+ # we are always a word behind 
+ my $idx=$allwordidx-1;
+ my $word=$allwords[$idx]->{word};
+ my $markup =  pretty_vowel_join(vowel_centered_word_split($word,$word_width));
+
+ # show context if paused
+ my $otherwords =  join(" ",map( {center_word($_->{word} || " ",7)} @allwords[($idx-3)..($idx-2)]));
+ $markup =  "$span_bg_open$otherwords$span_close $markup" if($pause);
+ say $word_width;
+
+ $gtk_text->set_markup($markup);
+}
+
+sub play() {
+  our $pause;
+  our @allwords;
+  our $allwordidx;
+  our $wpm;
+  our $cnt;
+
+  if($allwordidx>$#allwords){
+      $gtk_text->set_markup("DONE");
+      return TRUE;
+  }
+
+  Glib::Source->remove($gtk_timer);
+  if (!$pause) {
+      #say Dumper @allwords;
+      my $prevword=$allwords[$allwordidx]->{'word'}||'firstwords';
+      my $displen = calc_timeout($prevword,$wpm);
+
+      show_next_word();
+      settitle( sprintf "%02.0f%%", $allwords[$allwordidx]->{'byte'}/$cnt->{bytes_total}*100 );
+		$gtk_timer = Glib::Timeout->add($displen,\&play);
+  }
+}
+
+sub toggle_pause() {
+ our $pause;
+ if($pause){
+		$gtk_timer = Glib::Timeout->add(10, \&play);
+		$pause = 0;
+ } else {
+		$pause = 1;
+		Glib::Source->remove($gtk_timer);
+      show_word();
+ }
 }
 
 sub main2 {
 
    our $wpm;
    our $window;
+   our @allwords;
 
-   my $file = '/home/foranw/Downloads/Infomacracy_book/i.txt';
+   #my $file = '/home/foranw/Downloads/Infomacracy_book/i.txt';
+   my $file = '/home/foranw/Downloads/test.txt';
    my $FH;
-   my %cnt={byte=>0, line=>0, word=>0,bytes_total=>0};
    my @buf=();
+
    
-
-   ####
-   # gui
-	# show window and start gtk main
-   $window = setup_gtk();
-	$window->show_all;
-	Gtk2->main;
-
-
-   ####
-   
+   ######
    # TODO dont ask this of a pipe
-   $cnt{bytes_total}= -s $file;
+   our $cnt;
+   $cnt->{bytes_total}= -s $file;
 
 	open( $FH, "<:encoding(UTF-8)", $file) || die "can't open UTF-8 encoded filename: $!";
 
-   next_word($FH);
 
-   close($FH);
+   # TODO add max read bytes to read in
+   while(!eof($FH)){
+    push @allwords, get_words($FH,$cnt);
+   }
+   ######
+   
+
+  ####
+  # gui
+  # show window and start gtk main
+  
+  $window = setup_gtk();
+  $window->show_all;
+  Gtk2->main;
+  # HOOKED IN UNTIL END OF @allwords
+
+  close($FH);
+  say "DONE $#allwords words";
 }
 
 sub quitcall(){
@@ -317,7 +413,7 @@ sub quitcall(){
 }
 sub settitle($text){
    our $window;
-   say "setting title: '$text'" if $VERBOSE;
+   #say "setting title: '$text'" if $VERBOSE;
    $window->set_title("spread0r.pl: [@ $wpm] $text ") if $window;
 }
 
@@ -353,18 +449,6 @@ sub setup_gtk() {
    return($window)
 }
 
-sub toggle_pause(){
- our $pause;
- our $gtk_timer;
- if ($pause) {
- 	$gtk_timer = Glib::Timeout->add(500, sub{1;});
- 	$pause = 0;
- } else {
- 	$pause = 1;
- 	Glib::Source->remove($gtk_timer);
- }
- return TRUE;
-}
 
 sub keycall {
  my ($widget,$event,$window) = @_;
